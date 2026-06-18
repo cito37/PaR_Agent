@@ -1,0 +1,21 @@
+# 大模型配置
+llm_config:
+  base_url: "https://api.deepseek.com/anthropic"
+  api_key: "sk-00236b86f5fb4ff2a2bc666d2212ea1b"
+  model_name: "deepseek-v4pro"
+
+# MCP 工具服务配置
+mcp_config:
+  mcpServers:
+    # 本地 Shell 沙箱服务（stdio 传输模式）
+    shell:
+      transport: "stdio"
+      enabled: true
+      description: "Linux OverlayFS 沙箱命令执行工具"
+      env: {}
+      command: "sudo"
+      args: ["uv", "run", "./tool/shell.py"]
+
+# A2A 远程智能体配置
+a2a_config:
+  a2aServers: []
