@@ -1,26 +1,29 @@
 #将mcp工具转换成openai格式的tool进行的一系列操作
-
 from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
 from enum import StrEnum
-from typing import Any, Self, TypeVar, Generic, get_type_hints, Callable
+from typing import Any, Self, TypeVar, Generic, get_type_hints, Callable#类型标注
 from collections.abc import Awaitable
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack#异步管理资源的容器（栈）
 from dataclasses import dataclass
 
 # MCP官方库
-from mod.mcp import ClientSession, StdioServerParameters, types as mcp_types
+from mcp import ClientSession, StdioServerParameters,  types as mcp_types
+# 来创建、持有和操作与 MCP 服务的通信会话，StdioServerParameters包装的，
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 # 数据校验模型库
 from pydantic import BaseModel, Field, field_validator
+from typing import cast # 强制转换cast（str，变量1），把变量1转换为str
 
 
 T=TypeVar("T")
+# TypeVar泛形占位符，创建一个可变类型占位符
 
 @dataclass
+# 是装饰器（数据类语法糖，来自标准库 dataclasses）,作用：自动给类生成 __init__、__repr__、__eq__、__hash__ 等样板代码，
 class ToolResult(Generic[T]):
     success:bool
     message:str
@@ -36,7 +39,7 @@ def tool (name:str,description:str, params:dict,required:list[str]):
 # 这是把mcp提供的工具函数转换成大模型的tool格式
     def decorator(func:Callable) -> Callable:
     # callable是一个可调用类型，我要在这传入函数，这个函数必须是可调用的才能。
-        setattr(func,"_tool_name",name)
+        setattr(func,"_tool_name",name)#给这个函数加属性
         setattr(func,"_tool-schema",openai_tool_schema)
         return func
     
@@ -53,7 +56,7 @@ class BaseTool(ABC):
         # LLM 根据上面的 schema 生成 JSON 参数，解析后解包成 **kwargs 传给 invoke
         ...
 
-# 
+
     def has_tool(self,tool_name:str)->bool:
         for _,func in self._list_tool_methods():
             tool_n = getattr(func,tool_name,None)
@@ -63,10 +66,10 @@ class BaseTool(ABC):
     
  # kwargs 是大模型输出的参数字典，可能带一堆多余、不存在的参数。
     # 只保留函数定义里写了类型注解的参数，剔除多余 key。
-    def filter_params(self,method:Callable,kwargs:dict)->dict:
+    def filter_params(self,method:Callable,kwargs:dict) -> dict:
         type_hint_map = get_type_hints(method)
-        # get_type_hint读取一个函数 / 类上所有带类型注解的参数、返回值，返回字典
-        vail_param_name = set(type_hint_map())
+        # get_type_hint读取一个函数/类上所有带类型注解的参数、返回值，返回字典
+        vail_param_name = set(type_hint_map)
         return{k:v for k,v in kwargs.items() if k in vail_param_name}
    
 
@@ -99,7 +102,7 @@ class McpServerConfig(BaseModel):
     desciption:str=""
     env:dict[str,str]=Field(default_factory=dict)
     # 下面这两个字段是stdio传输需要的字段
-    command:str | None=None
+    command: str | None = None
     args:list[str]=Field(default_factory=list)
     # 下面这两个字段是http传输需要的字段
     url:str | None=None
@@ -111,7 +114,7 @@ class McpServerConfig(BaseModel):
         if transport_type in (MCPTransport.SSE,MCPTransport.STREAMABLE_HTTP):
             if not values.get("url"):
                 raise ValueError(f"传输模式{transport_type}必须填写url配置")
-        if transport_type in MCPTransport.STDIO:
+        if transport_type == MCPTransport.STDIO :
             if not values.get("command"):
                 raise ValueError (f"传输模式{transport_type}必须填写url配置")
         return values
@@ -123,33 +126,33 @@ class McpConfig(BaseModel):
 
 # 
 class MCPClientManager:
-    def _init_ (self,config:McpConfig):
+    def __init__ (self,config:McpConfig):
         self.config = config
-        self._stack = AsyncExitStack()
-        self.session : dict[str,ClientSession] ={}
+        self._stack = AsyncExitStack()#最后会释放这个stack
+        self._sessions : dict[str,ClientSession] ={}
         self._cached_tools: dict[str,dict] = {}
     
     async def init (self) ->Self :
-        await self.connect_mcp_severs()
+        await self.connect_mcp_servers()
         return self
     
     # 连接
-    async def connect_mcp_severs(self):
+    async def connect_mcp_servers(self):
         for server_name,server_cfg in self.config.mcpServers.items():
             if not server_cfg.enable:
                 continue
             if server_cfg.transport == MCPTransport.STDIO:
                 await self.connect_stdio_mcp_server(server_name, server_cfg)
             elif server_cfg.transport == MCPTransport.STREAMABLE_HTTP:
-                await self.connect_streamable_http_mcp_server(server_name,server_cfg)
+                await self.connect_streamable_http_mcp_server(server_name, server_cfg)
          # SSE模式可后续扩展，当前暂不实现
             # 连接建立完成后拉取该服务所有工具存入缓存
-        await self.cache_mcp_tools(server_name, self._sessions[server_name])        
+            await self.cache_mcp_tools(server_name, self._sessions[server_name])        
 
 
     async def connect_stdio_mcp_server(self,server_name,cfg:McpServerConfig):
         stdio_params = StdioServerParameters( # StdioServerParameters这是mcp提供的自动包装的程序
-            command = cfg.command,
+            command = cast(str,cfg.command),
             args= cfg.args,
             env = {**cfg.env} # **塞入新字典，防止原数据被篡改
         )
@@ -158,20 +161,20 @@ class MCPClientManager:
         # stdio_client：MCP SDK导入函数，接收StdioServerParameters，创建本地子进程传输对象
         read_stream,write_stream = transport  
         session = await self._stack.enter_async_context(ClientSession(read_stream,write_stream))# ClientSession：MCP SDK导入类，传入读写流建立通信会话
-        await session.initiaize()
+        await session.initialize()
         self._sessions[server_name] = session
 
-    async def connect_streamable_http_mcp_serve(self,server_name,cfg:McpServerConfig):
-        transport=await self._stack.enter_async_context(streamablehttp_client(cfg.url,headers=cfg.headers))
-        read_stream,write_stream = transport
+    async def connect_streamable_http_mcp_server(self,server_name,cfg:McpServerConfig):
+        transport=await self._stack.enter_async_context(streamable_http_client(cast(str,cfg.url),headers=cfg.headers))
+        read_stream, write_stream = transport
         session = await self._stack.enter_async_context(ClientSession(read_stream,write_stream))
-        await session.initiaize()
+        await session.initialize()
         self._sessions[server_name] = session
     
     async def cache_mcp_tools(self, server_name: str, session: ClientSession):
         tool_list_resp = await session.list_tools()
-        for mcp_tool in tool_list_resp:
-            global_tool_name = f"mcp_{server_name}_{mcp_tool}"
+        for mcp_tool in tool_list_resp.tools:
+            global_tool_name = f"mcp_{server_name}_{mcp_tool.name}"
             self._cached_tools[global_tool_name]={
                 "type" : "function",
                 "function"  : {
@@ -181,7 +184,7 @@ class MCPClientManager:
             }
 
     def get_all_tools(self) ->list[dict]:
-        return list(self._cached_tools.value)
+        return list(self._cached_tools.values())
     
     async def invoke(self,full_tool_name:str,args:dict)-> ToolResult[list[dict]]:
         # 校验缓存里是否有这个工具
@@ -195,7 +198,7 @@ class MCPClientManager:
         prefix = "mcp_"
         raw_name = full_tool_name.removeprefix(prefix)
         server_id,origin_tool_name = raw_name.split("_",1)
-        target_session = self.session.get(server_id)
+        target_session = self._sessions.get(server_id)
         if not target_session:
             return ToolResult[list[dict]](
                 success=False,
@@ -227,7 +230,7 @@ class MCPClientManager:
 
 # 继承前面的BaseTool抽象接口，这地方传入数据了，就是包装层
 class MCPTool(BaseTool):
-    def _init_(self,manager: MCPClientManager):
+    def __init__(self,manager: MCPClientManager):
         self._manager = manager
 
     def get_tools(self)->list[dict]:
