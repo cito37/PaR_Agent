@@ -50,8 +50,8 @@ class OverlayFSSandbox:
         if self._init_proc is not None:
             return
         
-        # if sys.platform !="linux":
-        #     raise SandboxStartError('"OverlayFS 沙箱仅支持 Linux 系统"')
+        if sys.platform !="linux":
+            raise SandboxStartError('"OverlayFS 沙箱仅支持 Linux 系统"')
         
         try:
             self.upper_dir.mkdir(parents=True,exist_ok=True)
@@ -179,7 +179,7 @@ class OverlayFSSandbox:
         # 杀死进程
         if self._init_proc :
             try:
-                os.killpg(os.getpgid(self._init_proc.pid),9)
+                os.killpg(os.getpgid(self._init_proc.pid),9) # type: ignore
             except ProcessLookupError:
                 pass
             finally:
