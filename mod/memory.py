@@ -133,3 +133,85 @@ class RedisMemory:
              # hset:hash传入，把state转换为python字典保存到redis的_key_state里
         except Exception as e:
             logger.error(f"更新任务状态失败: {e}")
+    
+    async def get_task_state(self) -> Optional[TaskState]:
+        try:
+            raw = await self._client.hgetall(self._key_state)
+            if raw:
+                decode = {k.decode():v.decode() for k ,v in raw.item()}
+                
+                if "todo"in decode:
+                    decode["todo"] = json.load(decode["todo"])
+                if "done" in decode:
+                    decode["done"] = json.load(decode{"done"})
+
+                return TaskState(**decode)
+        except Exception as e:
+            logger.error(f"读取任务状态失败: {e}")
+        return None    
+    
+    # 第四层 记录用户偏好
+async def add_fact(self, fact: SemanticFact) -> None:
+    try:
+        await self._client.hset(
+                self._key_facts,
+                fact.type,
+                fact.model_dump_json()
+            )
+    except Exception as e:
+            logger.error(f"存入语义事实失败: {e}")
+
+async def get_facts(self, fact_type: Optional[str] = None) -> List[SemanticFact]:
+    try:
+            if fact_type:
+                raw = await self._client.hget(self._key_facts, fact_type)
+                if raw:
+                    return [SemanticFact.model_validate_json(raw)]
+                return []
+            else:
+                raw_dict = await self._client.hgetall(self._key_facts)
+                facts = []
+                for _, v in raw_dict.items():
+                    facts.append(SemanticFact.model_validate_json(v.decode()))
+                return facts
+    except Exception as e:
+            logger.error(f"读取语义事实失败: {e}")
+            return []
+    
+# 上下文拼凑
+async def build_context(self) -> Dict[str, Any]:
+    recent_msgs = await self.get_recent_messages()
+    summary = await self.get_summary()
+    task_state = await self.get_task_state()
+    facts = await self.get_facts()
+
+    return {
+            "summary": summary or {},           # Layer 2 对话摘要
+            "recent_messages": recent_msgs,     # Layer 1 近期窗口
+            "task_state": task_state,           # Layer 3 任务状态
+            "semantic_facts": facts             # Layer 4 知识事实
+        }
+
+
+#  兼容旧接口（供 roll_back 等使用）
+async def roll_back(self, count: int = 1) -> List[ChatMessage]:
+        """从 Layer 1 移除最后 N 条消息，用于回退错误工具调用"""
+        if count <= 0:
+            return []
+        try:
+            # LPOP count 从头部移除 count 条
+            raw_list = await self._client.lpop(self._key_recent, count)
+            if raw_list:
+                return [ChatMessage.model_validate_json(m) for m in raw_list]
+            return []
+        except Exception:
+            return []
+
+async def to_dict(self) -> Dict[str, Any]:
+        """导出全部记忆状态（包含 4 层），用于前端预览或调试"""
+        return {
+            "summary": await self.get_summary(),
+            "recent": [m.model_dump() for m in await self.get_recent_messages()],
+            "state": (await self.get_task_state()).model_dump() if await self.get_task_state() else None,
+            "facts": [f.model_dump() for f in await self.get_facts()]
+        }
