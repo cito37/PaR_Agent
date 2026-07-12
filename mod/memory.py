@@ -95,27 +95,58 @@ class RedisMemory:
         if not self._llm:
             logger.warning("未注入 LLM 客户端，无法自动总结")
             return
-        
+
+        # 锁的key，还没有value
+        lock_key = f"mem:lock:compress:{self._session_id}"
+
         try:
-            msgs = await self.get_recent_messages(limit=self._limit) # 这里有矛盾，标记
+            # 1. 尝试获取锁（SETNX：只有 Key 不存在时才返回 True）
+            acquired = await self._client.setnx(lock_key, "1") # 这是给lock_key的value为1
+            if not acquired:
+                # 如果锁已存在，说明已经有别的协程在压缩，或者上一次压缩失败后锁未清理（兜底处理）
+                logger.info("压缩锁已被占用，跳过本次压缩，防止并发或重试风暴")
+                return
+
+            # 2. 给锁加上自动过期时间（30 秒），防止因进程崩溃导致锁永远无法释放（死锁）
+            await self._client.expire(lock_key, 30)
+
+            # 3. 获取当前窗口内的全部消息
+            msgs = await self.get_recent_messages(limit=self._limit)
             if not msgs:
                 return
+
+            # 4. 构造 Prompt 并调用 LLM
             prompt = f"""
             请对以下对话历史进行结构化总结，提炼出关键上下文、项目信息、用户偏好。
             直接输出 JSON 格式，不要包含 markdown 代码块。
+
             对话历史：
             {json.dumps([m.model_dump() for m in msgs], ensure_ascii=False)}
-            """
-            summary_response = await self._llm.invoke(message=[{"role"="user","content"=prompt}],response_format={"type": "json_object"})
+"""
+            summary_response = await self._llm.invoke(
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
+            )
             summary_json = summary_response.choices[0].message.content
+
+            # 5. LLM 成功响应后，开始原子化写总结 + 清空50条近期窗口
             pipe = self._client.pipeline()
-            pipe.set(self._key_summary, summary_json) # set是负责存值的，存到self._key_summary，若这有旧值直接覆盖
-            pipe.delete(self._key_recent) # 把第一层的数据清除了
+            pipe.set(self._key_summary, summary_json)
+            pipe.delete(self._key_recent)
             await pipe.execute()
-            logger.info(f"记忆已触发压缩，生成总结: {summary_json[:100]}...")
+
+            logger.info(f"记忆压缩成功，已生成摘要: {summary_json[:100]}...")
 
         except Exception as e:
-            logger.error(f"记忆压缩失败: {e}")
+            # 【防御性补丁】哪怕发生异常，锁也会在 30 秒后自动过期（expire 兜底）
+            # 并且因为我们在最后才会 delete 最近消息，所以即使失败，Layer 1 数据也完全安全，不会丢失。
+            logger.error(f"记忆压缩失败，锁将在 30 秒后自动释放: {e}")
+
+        finally:
+            # 【安全兜底】无论如何，尝试手动释放锁（删除 lock_key）
+            # 如果前面 setnx 失败，acquired 为 False，这里会跳过
+            if acquired:
+                await self._client.delete(lock_key)
         
     async def get_summary(self) -> Optional[Dict[str, Any]]:
         try:
