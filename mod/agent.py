@@ -5,6 +5,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any, AsyncGenerator, Union
+from mod.base import ToolResult
 
 # 依赖模块（按项目已定义的路径导入）
 from mod.prompt import (
@@ -73,7 +74,7 @@ class BaseAgent(ABC):
                 ]
                 for msg in context.get("recent_messages", []):
                     messages.append({"role": msg.role, "content": msg.content})
-                
+
                 response = await self.llm.invoke(
                     messages=messages,
                     tools=self._cached_tool_schemas,
@@ -82,3 +83,160 @@ class BaseAgent(ABC):
                 )
                 choice = response.choices[0]
                 message = choice.message
+
+                if message.tool_calls:  
+                    tool_call = message.tool_calls[0]  # 取工具列表中第一个工具
+                    tool_name = tool_call.function.name
+                    args_str = tool_call.function.arguments
+
+                    yield ToolEvent(  # 返回工具事件，工具事件里定义是这样。
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_name,
+                        function_name=tool_name,
+                        function_args=json.loads(args_str),
+                        status="CALLING",
+                    )
+                    tool_result = await self._execute_tool(tool_name, args_str)
+
+                    yield ToolEvent(
+                        tool_call_id=tool_call.id,
+                        tool_name=tool_name,
+                        function_name=tool_name,
+                        function_args=json.loads(args_str),
+                        function_result=tool_result.data if tool_result.success else {"error": tool_result.message},
+                        status="CALLED",
+                    )
+
+                    await self.memory.add_message(ChatMessage(
+                        role="tool",
+                        context=f"工具执行结果：{json.dumps(tool_result.model_dump())}",
+                        tool_call_id=tool_call.id,
+                    ))
+
+                    if tool_result.data and isinstance(tool_result.data, dict) and tool_result.data.get("__wait__"):
+                        yield WaitEvent()
+                        return
+
+                    continue
+            
+                else:
+                    # 2.4 LLM 没有调用工具，直接输出回答
+                    content = message.content
+                    yield MessageEvent(role="assistant", message=content)
+                    await self.memory.add_message(ChatMessage(role="assistant", content=content))
+                    break
+                
+            except Exception as e:
+                logger.exception(f"Agent {self.name} 循环执行异常")
+                yield ErrorEvent(error=f"Agent 执行异常: {str(e)}")
+                break
+
+        if loop_count >= max_loops:
+            yield ErrorEvent(error="Agent 执行循环次数超过上限（100次），可能陷入死循环")
+
+    async def _execute_tool(self, tool_name: str, args_str: str) -> Any:
+        try:
+            args = json.loads(args_str)
+        except json.JSONDecodeError:
+            return ToolResult(success=False, message="无法解析工具参数 JSON", data=None)
+        
+        for tool in self.tools:
+            if tool.has_tool(tool_name):
+                result = await tool.invoke(tool_name, **args)
+                return result
+        return ToolResult(success=False, message=f"未找到工具: {tool_name}", data=None)
+
+    async def add_to_memory(self, role: str, context: str, metadata: dict = None):
+        """快捷方法，向记忆追加一条消息"""
+        await self.memory.add_message(ChatMessage(
+            role=role,
+            context=context,
+            metadata=metadata or {}
+        ))
+    async def roll_back_memory(self, count: int = 1) -> List[ChatMessage]:
+        # 回滚最后 N 条记忆（用于工具调用失败时的状态恢复；外面有个大循环，每次循环都是count-1
+        return await self.memory.roll_back(count=count)
+
+class PlanAgent(BaseAgent):
+    def __init__(self, session_id: str, llm: OpenAILLM, memory: RedisMemory):
+        super().__init__(
+            name="planner",
+            session_id=session_id,
+            llm=llm,
+            memory=memory,
+            tools=[],
+            system_prompt=SYSTEM_PROMPT + "\n" + PLAN_AGENT_PROMPT
+        )
+
+    async def create_plan(self, message: str, files: List[str] = None) -> Plan:
+        """
+        根据用户消息生成初始计划。
+        返回 Plan 对象，并产出 PlanEvent。
+        """
+        prompt = CREATE_PLAN_PROMPT.format(message=message, files=json.dumps(files or []))
+        # 构建只包含 system + user 的简单对话
+        messages = [·
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+        try:
+            # 强制要求 JSON 输出
+            response = await self.llm.invoke(
+                messages=messages,
+                response_format={"type": "json_object"},
+                tools=None
+            )
+            content = response.choices[0].message.content
+            plan_data = json.loads(content)
+            # 构造 Plan 对象
+            plan = Plan(**plan_data)
+            return plan
+        except Exception as e:
+            logger.error(f"PlanAgent 创建计划失败: {e}")
+            raise ValueError(f"规划生成异常: {e}")
+        
+# 更新计划，plan有很多步，每执行完一步，把完成的删了就更新plan
+    async def update_plan(self, plan: Plan, step: Step) -> Plan:
+        prompt = UPDATE_PLAN_PROMPT.format(
+            plan=plan.model_dump_json(),
+            step=step.model_dump_json()
+        )
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+        try:
+            response = await self.llm.invoke(
+                messages=messages,
+                response_format={"type": "json_object"},
+                tools=None
+            )
+            content = response.choices[0].message.content
+            updated_plan_data = json.loads(content)
+            return Plan(**updated_plan_data)
+        except Exception as e:
+            logger.error(f"PlanAgent 更新计划失败: {e}")
+            raise ValueError(f"计划更新异常: {e}")
+        
+class ReActAgent(BaseAgent):
+    def __init__(self, session_id: str, llm: OpenAILLM, memory: RedisMemory, tools: List[BaseTool]):
+        super().__init__(
+            name="re-act",
+            session_id=session_id,
+            llm=llm,
+            memory=memory,
+            tools=tools,
+            system_prompt=SYSTEM_PROMPT + "\n" + REACT_SYSTEM_PROMPT
+        )
+    # 按照plan单个执行step
+    async def execute_step(self, plan: Plan, step: Step, user_message: str, files: List[str] = None) -> Step:   
+         # 1. 构造执行该步骤的提示词
+        prompt = REACT_EXEC_PROMPT.format(
+            step=step.model_dump_json(),
+            message=user_message,
+            files=json.dumps(files or []),
+            lang=plan.lang
+        )
+        await self.memory.add_message(ChatMessage(role="user", content=prompt))
+        final_result = None
+        step_status = "running"
