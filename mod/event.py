@@ -81,6 +81,10 @@ class MessageEvent(BaseEvent):
     message: str
     files: List[str] = Field(default_factory=list)
 
+class TitleEvent(BaseEvent):
+    type: str = "title"
+    title: str
+
 class WaitEvent(BaseEvent):
     type: str = "wait"
     """触发该事件时，工作流暂停等待用户输入"""
