@@ -122,62 +122,62 @@ class TaskManager:
             # 协程执行完毕，从运行字典中移除引用，释放内存
             self._running_tasks.pop(task_id, None)
 
-        async def get_task_status(self, task_id: str) -> Optional[TaskStatus]:
-            # 询任务当前状态
-            task = self._tasks.get(task_id)
-            return task.status if task else None
+    async def get_task_status(self, task_id: str) -> Optional[TaskStatus]:
+        # 询任务当前状态
+        task = self._tasks.get(task_id)
+        return task.status if task else None
 
-        async def get_events_from_stream(  # 从流里拿事件
-            self, task_id: str, last_event_id: str = "0"
-        ) -> List[Dict[str, Any]]:
-            output_stream_key = f"output:{task_id}"
-            try:
-                # XREAD COUNT 10：每次最多取 10 条，防止一次性拉取过多导致内存溢出
-                # BLOCK 0：如果没有新消息，立即返回空列表（非阻塞），由上层 SSE 循环控制等待时间
-                result = await self._redis.xread(
-                    {output_stream_key: last_event_id}, count=10, block=0
-                )
-                if not result:
-                    return [], last_event_id
-                # Redis XREAD 返回的格式是: [[stream_key, [(id, {data}), ...]]]
-                stream_data = result[0][1]
-                events = []
-                latest_id = last_event_id
-
-                for msg_id, msg_data in stream_data:
-                    latest_id = msg_id
-                    # 提取事件数据（第 14 步可以判断是 event 字段还是 status 字段）
-                    events.append({"id": msg_id, "data": msg_data})
-
-                return events, latest_id
-            except Exception as e:
-                logger.error(f"从 Redis 读取事件失败: {e}")
+    async def get_events_from_stream(  # 从流里拿事件
+        self, task_id: str, last_event_id: str = "0"
+    ) -> tuple[List[Dict[str, Any]]]:
+        output_stream_key = f"output:{task_id}"
+        try:
+            # XREAD COUNT 10：每次最多取 10 条，防止一次性拉取过多导致内存溢出
+            # BLOCK 0：如果没有新消息，立即返回空列表（非阻塞），由上层 SSE 循环控制等待时间
+            result = await self._redis.xread(
+                {output_stream_key: last_event_id}, count=10, block=0
+            )
+            if not result:
                 return [], last_event_id
+            # Redis XREAD 返回的格式是: [[stream_key, [(id, {data}), ...]]]
+            stream_data = result[0][1]
+            events = []
+            latest_id = last_event_id
 
-        async def cancel_task(self, task_id: str) -> bool:
-            # 消正在运行的任务（强制终止后台协程
-            if task_id not in self._running_tasks:
-                return False
+            for msg_id, msg_data in stream_data:
+                latest_id = msg_id
+                # 提取事件数据（第 14 步可以判断是 event 字段还是 status 字段）
+                events.append({"id": msg_id, "data": msg_data})
 
-            task = self._running_tasks[task_id]
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            self._tasks[task_id].status = TaskStatus.CANCELED
+            return events, latest_id
+        except Exception as e:
+            logger.error(f"从 Redis 读取事件失败: {e}")
+            return [], last_event_id
+
+    async def cancel_task(self, task_id: str) -> bool:
+        # 消正在运行的任务（强制终止后台协程
+        if task_id not in self._running_tasks:
+            return False
+
+        task = self._running_tasks[task_id]
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        self._tasks[task_id].status = TaskStatus.CANCELED
+        self._running_tasks.pop(task_id, None)
+        return True
+
+    async def cleanup_task(self, task_id: str) -> None:
+
+        # 句话作用：任务彻底完成后，清理 Redis 中的输入/输出流数据。
+        # 常由 API 层在 DoneEvent 或 ErrorEvent 后主动调用，防止 Redis 堆积过期数据。
+
+        try:
+            await self._redis.delete(f"input:{task_id}", f"output:{task_id}")
+            self._tasks.pop(task_id, None)
             self._running_tasks.pop(task_id, None)
-            return True
-
-        async def cleanup_task(self, task_id: str) -> None:
-
-            # 句话作用：任务彻底完成后，清理 Redis 中的输入/输出流数据。
-            # 常由 API 层在 DoneEvent 或 ErrorEvent 后主动调用，防止 Redis 堆积过期数据。
-
-            try:
-                await self._redis.delete(f"input:{task_id}", f"output:{task_id}")
-                self._tasks.pop(task_id, None)
-                self._running_tasks.pop(task_id, None)
-                logger.info(f"已清理任务 {task_id} 的 Redis 数据")
-            except Exception as e:
-                logger.error(f"清理任务 {task_id} 失败: {e}")
+            logger.info(f"已清理任务 {task_id} 的 Redis 数据")
+        except Exception as e:
+            logger.error(f"清理任务 {task_id} 失败: {e}")
