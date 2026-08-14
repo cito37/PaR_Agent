@@ -119,14 +119,14 @@ class McpServerConfig(BaseModel):
                 raise ValueError (f"传输模式{transport_type}必须填写url配置")
         return values
     
-class McpConfig(BaseModel):
+class MCPConfig(BaseModel):
     mcpServers: dict[str, McpServerConfig] = Field(default_factory=dict)
 
 
 
 # 
 class MCPClientManager:
-    def __init__ (self,config:McpConfig):
+    def __init__ (self,config:MCPConfig):
         self.config = config
         self._stack = AsyncExitStack()#最后会释放这个stack
         self._sessions : dict[str,ClientSession] ={}

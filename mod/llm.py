@@ -11,7 +11,7 @@ import yaml
 from openai import AsyncOpenAI, APITimeoutError, APIStatusError
 from pydantic import BaseModel, Field
 from filelock import FileLock
-from mod.mcp import McpConfig
+from mod.mcp import MCPConfig
 from mod.a2a import A2AConfig
 
 logger = logging.getLogger(__name__)
@@ -69,12 +69,12 @@ class AppConfigService:
             llm_raw["api_key"] = os.getenv("OPENAI_API_KEY") # 同上
         return LLMConfig(**llm_raw) # *号是把llm_raw转换为字典格式
     
-    def get_mcp_config(self) -> McpConfig:
+    def get_mcp_config(self) -> MCPConfig:
         """解析 mcp_config 字段，返回 MCPConfig Pydantic 对象"""
         raw = self.load_config()
         mcp_raw = raw.get("mcp_config", {})
         # 传入 { "mcpServers": ... }，MCPConfig 会自动解析内部字典
-        return McpConfig(**mcp_raw)
+        return MCPConfig(**mcp_raw)
 
     # ---------- 【新增】A2A 配置 ----------
     def get_a2a_config(self) -> A2AConfig:
