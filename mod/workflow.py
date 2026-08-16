@@ -149,9 +149,7 @@ class WorkFlow:
             await self.repo.update_status(self.session_id, SessionStatus.COMPLETED)
 
     async def resume(self, user_message: str) -> AsyncGenerator[EventUnion, None]:
-        """
-        一句话作用：当触发了 WaitEvent 后，用户回复时调用此方法恢复工作流。
-        """
+        # 当触发了 WaitEvent 后，用户回复时调用此方法恢复工作流。
         # 将用户新输入推入记忆
         await self.memory.add_message(ChatMessage(role="user", content=user_message))
         # 将当前状态设为 IDLE，重新调用 invoke 时状态机会从原地恢复
