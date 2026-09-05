@@ -19,3 +19,7 @@ mcp_config:
 # A2A 远程智能体配置
 a2a_config:
   a2aServers: []
+
+llm_config:
+  max_context_tokens: 128000
+  compress_threshold: 0.75

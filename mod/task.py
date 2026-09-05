@@ -18,7 +18,6 @@ from mod.llm import OpenAILLM
 
 logger = logging.getLogger(__name__)
 
-
 class TaskStatus(StrEnum):
     PENDING = "pending"  # 任务已创建，等待执行
     RUNNING = "running"  # 任务正在执行（WorkFlow 运行中）

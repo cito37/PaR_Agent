@@ -1,0 +1,6 @@
+[
+  {"id": "test_1", "name": "简单问答", "input": "1+1等于几？"},
+  {"id": "test_2", "name": "查询时间", "input": "现在几点了？"},
+  {"id": "test_3", "name": "生成代码", "input": "用 Python 写一个快排函数"},
+  {"id": "test_4", "name": "执行命令", "input": "帮我执行 ls -l 命令"}
+]

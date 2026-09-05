@@ -18,7 +18,6 @@ from mcp.client.streamable_http import streamable_http_client
 from pydantic import BaseModel, Field, field_validator
 from typing import cast # 强制转换cast（str，变量1），把变量1转换为str
 
-
 T=TypeVar("T")
 # TypeVar泛形占位符，创建一个可变类型占位符
 
@@ -29,7 +28,6 @@ class ToolResult(Generic[T]):
     message:str
     data: T | None=None
 # 这里定义了使用tool后返回信息的格式，调用成功没，信息，数据是什么等。
-
 
 def tool (name:str,description:str, params:dict,required:list[str]):
     openai_tool_schema={"type":"function","function":{"name":name,"description":description,"parameters":{"type":"object","properties":params,"required":required}}}
@@ -45,9 +43,11 @@ def tool (name:str,description:str, params:dict,required:list[str]):
     
     return  decorator
 
-
 # 统一标准接口，不必让agent知道这个工具是mcp、tool或其他提供的，这里没有写具体内容，只定义了，后期用直接继承然后再额外加数据
 class BaseTool(ABC):
+    def __init__(self, permission: str = "READ"):
+        self.permission = permission
+
     @abstractmethod
     def get_tools(self)->list[dict]:
         ...
@@ -122,9 +122,6 @@ class McpServerConfig(BaseModel):
 class MCPConfig(BaseModel):
     mcpServers: dict[str, McpServerConfig] = Field(default_factory=dict)
 
-
-
-# 
 class MCPClientManager:
     def __init__ (self,config:MCPConfig):
         self.config = config
@@ -148,7 +145,6 @@ class MCPClientManager:
          # SSE模式可后续扩展，当前暂不实现
             # 连接建立完成后拉取该服务所有工具存入缓存
             await self.cache_mcp_tools(server_name, self._sessions[server_name])        
-
 
     async def connect_stdio_mcp_server(self,server_name,cfg:McpServerConfig):
         stdio_params = StdioServerParameters( # StdioServerParameters这是mcp提供的自动包装的程序
@@ -222,15 +218,14 @@ class MCPClientManager:
                 data=[]
             )
     async def cleanup(self):
-            # 一句话作用：关闭全部MCP连接、子进程，清空缓存，释放所有资源，程序退出时调用
             await self._stack.aclose()
             self._sessions.clear()
             self._cached_tools.clear()
 
-
 # 继承前面的BaseTool抽象接口，这地方传入数据了，就是包装层
 class MCPTool(BaseTool):
-    def __init__(self,manager: MCPClientManager):
+    def __init__(self, manager: MCPClientManager, permission: str = "READ"):
+        super().__init__(permission=permission)
         self._manager = manager
 
     def get_tools(self)->list[dict]:

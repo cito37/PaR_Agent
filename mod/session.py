@@ -21,7 +21,7 @@ from mod.memory import ChatMessage
 logger = logging.getLogger(__name__)
 
 class SessionStatus(StrEnum):
-    """一句话作用：定义会话的生命周期状态机"""
+    
     PENDING = "pending"      # 初始创建，或等待用户输入
     RUNNING = "running"      # 正在执行任务（流式输出中）
     WAITING = "waiting"      # 等待用户回复（如触发了 message_ask_user）

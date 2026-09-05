@@ -90,13 +90,17 @@ class OpenAILLM:
             api_key=config.api_key,
             base_url=config.base_url,
             timeout=30.0
-        ) # timeout是时间的30s没反应重试
-
+        )
         self._model = config.model_name
-        self._max_retries = 3  # llm可能调用失败，失败后重试，最多重试3次。
-    async def invoke (self,messages: List[Dict[str, Any]],
+        self._max_retries = 3
+        self._max_context_tokens = 128000  # 默认 GPT-4o 上下文窗口，可改成从 config 读取
+        self._last_prompt_tokens = 0
+
+    async def invoke(
+        self,
+        messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        response_format: Optional[Dict[Literal["type"], Literal["json_object", "text"]]] = None, # dict字典，key必须是type，value是二选一
+        response_format: Optional[Dict[Literal["type"], Literal["json_object", "text"]]] = None,
         tool_choice: Optional[Literal["auto", "none"] | Dict[str, Any]] = None,
     ) -> Any:
         kwargs = {
@@ -104,36 +108,49 @@ class OpenAILLM:
             "messages": messages,
             "parallel_tool_calls": False,  # 强约束
         }
-        if tools: # 如果上传了说需要什么工具，则把kwargs改成这个工具
+        if tools:
             kwargs["tools"] = tools
-            # 默认允许模型自动选择，但可由上层通过 tool_choice 覆盖
             kwargs["tool_choice"] = tool_choice if tool_choice is not None else "auto"
         if response_format:
-            kwargs["response_format"] = response_format   
-            
+            kwargs["response_format"] = response_format
+
         last_exception = None
         for attempt in range(1, self._max_retries + 1):
             try:
                 response = await self._client.chat.completions.create(**kwargs)
+
+                if response and hasattr(response, 'usage') and response.usage:
+                    self._last_prompt_tokens = response.usage.prompt_tokens
+
                 return response
-            
-            except (APITimeoutError,APIStatusError) as e:     # 这两种状态值得再试一次，
+
+            except (APITimeoutError, APIStatusError) as e:
                 last_exception = e
-                if hasattr (e,"status_code") and e.status_code in (426,500,502,503,504):
-                    # hasattr 检查用的，这里是在e里面检查有没有status_code
-                    wait_sec = 2 **(attempt-1)  # 2的attempt-1次方,wait_sec是等待多少秒
-                    logger.warning(f"第{attempt}LLM调用失败，wait_sec秒后重试")
+                if hasattr(e, "status_code") and e.status_code in (429, 500, 502, 503, 504):
+                    wait_sec = 2 ** (attempt - 1)
+                    logger.warning(f"第 {attempt} 次 LLM 调用失败，{wait_sec} 秒后重试: {e}")
                     if attempt < self._max_retries:
                         await asyncio.sleep(wait_sec)
-                    continue #跳过这次循环
-                else:  # 只有3次连接llm的机会，若走到else这步了意味着3次都用完了，直接返回错误了
+                    continue
+                else:
                     raise
-            
-            except Exception as e:  # 上面的except是那两种错误方式还值得重试，这里就是两种值得重试方法意外的其他错误，就直接报错吧
+
+            except Exception as e:
                 logger.error(f"LLM 调用发生未知异常 (第 {attempt} 次): {e}")
                 if attempt < self._max_retries:
                     await asyncio.sleep(1)
                 continue
-        # 全部重试失败，抛出最后一次异常
+
         logger.error(f"LLM 调用重试 {self._max_retries} 次全部失败")
         raise last_exception or RuntimeError("LLM 调用失败，无具体异常信息")
+
+    @property
+    def last_prompt_tokens(self) -> int:
+        """返回最后一次 LLM 调用的输入 Token 数"""
+        return self._last_prompt_tokens
+
+    @property
+    def context_window_size(self) -> int:
+        """返回上下文窗口大小（用于计算触发压缩的阈值）"""
+        return self._max_context_tokens
+

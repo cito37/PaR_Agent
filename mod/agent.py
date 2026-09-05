@@ -309,6 +309,14 @@ class BaseAgent(ABC):
             loop_count += 1
 
             try:
+                current_tokens = self.llm.last_prompt_tokens
+                context_limit = self.llm.context_window_size
+
+                if current_tokens and current_tokens > (context_limit * 0.75):
+                    logger.info(f"检测到 Token 水位 {current_tokens} 超过阈值 {context_limit * 0.75}，触发 LLM 摘要压缩")
+
+                    await self.memory._compress_with_llm()
+
                 context = await self.memory.build_context()
                 # 将任务状态和摘要融入 system prompt，避免在对话历史中插入冗余 user 消息
                 task_state_str = json.dumps(context.get('task_state', {}))
@@ -385,6 +393,15 @@ class BaseAgent(ABC):
         except json.JSONDecodeError:
             return ToolResult(success=False, message="无法解析工具参数 JSON", data=None)
 
+        if hasattr(self, "_permission_gate") and self._permission_gate is not None:
+            approval_status = self._permission_gate.check(tool_name, args)
+            if approval_status == ApprovalStatus.NEED_INPUT:
+                return ToolResult(
+                    success=False,
+                    message="高危操作需要用户审批",
+                    data={"__wait__": True, "approval": "dangerous_command", "tool": tool_name, "args": args}
+                )
+
         for tool in self.tools:
             if tool.has_tool(tool_name):
                 result = await tool.invoke(tool_name, **args)
@@ -459,7 +476,7 @@ class PlanAgent(BaseAgent):
 
 
 class ReActAgent(BaseAgent):
-    def __init__(self, session_id: str, llm: OpenAILLM, memory: RedisMemory, tools: List[BaseTool]):
+    def __init__(self, session_id: str, llm: OpenAILLM, memory: RedisMemory, tools: List[BaseTool],permission_gate=None):
         super().__init__(
             name="re-act",
             session_id=session_id,
@@ -468,6 +485,7 @@ class ReActAgent(BaseAgent):
             tools=tools,
             system_prompt=SYSTEM_PROMPT + "\n" + REACT_SYSTEM_PROMPT
         )
+        self._permission_gate = permission_gate
 
     async def execute_step(self, plan: Plan, step: Step, user_message: str, files: List[str] = None) -> Step:
         prompt = REACT_EXEC_PROMPT.format(

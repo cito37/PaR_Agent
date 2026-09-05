@@ -33,11 +33,14 @@ class WorkFlow:
         redis_client,
         tools: List[BaseTool],
         repo: SessionRepo,
-        sandbox_id: Optional[str] = None
+        sandbox_id: Optional[str] = None,
+        permission_gate=None
     ):
+        permission_gate=permission_gate
         self.session_id = session_id
         self.repo = repo
         self.sandbox_id = sandbox_id
+        self.logger = logging.getLogger(f"trace.{session_id}")
 
         self.memory = RedisMemory(
             redis_client=redis_client,
@@ -67,6 +70,11 @@ class WorkFlow:
         files: List[str] = None
     ) -> AsyncGenerator[EventUnion, None]:
         self.status = FlowStatus.PLANNING
+        self.logger.info(json.dumps({
+            "node": "start",
+            "message": user_message,
+            "files": files or []
+        }))
         yield MessageEvent(role="user", message=user_message)
 
         try:
@@ -86,6 +94,11 @@ class WorkFlow:
                     break
                 self.current_step = step
                 self.status = FlowStatus.EXECUTING
+                self.logger.info(json.dumps({
+                    "node": "step_start",
+                    "step_id": step.id,
+                    "description": step.description
+                }))
                 yield StepEvent(step=step, status=ExecStatus.RUNNING)
 
                 executed_step = await self.executor.execute_step( # 调用了react agent的执行
@@ -94,6 +107,12 @@ class WorkFlow:
                     user_message=user_message,
                     files=files
                 )
+
+                self.logger.info(json.dumps({
+                    "node": "step_done",
+                    "step_id": step.id,
+                    "status": executed_step.status
+                }))
 
                 if executed_step.status == ExecStatus.WAITING:
                     yield WaitEvent()
@@ -120,6 +139,10 @@ class WorkFlow:
 
                 self.status = FlowStatus.UPDATING
                 updated_plan = await self.planner.update_plan(plan=plan, step=executed_step)
+                self.logger.info(json.dumps({
+                    "node": "plan_updated",
+                    "steps_count": len(updated_plan.steps)
+                }))
                 self.current_plan = updated_plan
                 plan = updated_plan
                 yield PlanEvent(plan=plan, status="updated")
@@ -127,6 +150,10 @@ class WorkFlow:
             if plan.done:
                 self.status = FlowStatus.SUMMARIZING
                 summary = await self.executor.summarize(plan)
+                self.logger.info(json.dumps({
+                    "node": "summarize",
+                    "summary_length": len(summary)
+                }))
                 yield MessageEvent(role="assistant", message=summary)
 
                 # 将最终总结写入记忆
@@ -140,10 +167,18 @@ class WorkFlow:
                 # ------------- 阶段 4：完成（COMPLETED） -------------
             self.status = FlowStatus.COMPLETED
             await self.repo.update_status(self.session_id, SessionStatus.COMPLETED)
+            self.logger.info(json.dumps({
+                "node": "completed"
+            }))
+
             yield DoneEvent()
 
         except Exception as e:
             logger.exception("WorkFlow 执行异常")
+            self.logger.error(json.dumps({
+                "node": "error",
+                "error": str(e)
+            }))
             yield ErrorEvent(error=f"工作流异常: {str(e)}")
             self.status = FlowStatus.COMPLETED
             await self.repo.update_status(self.session_id, SessionStatus.COMPLETED)

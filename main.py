@@ -15,19 +15,29 @@ from mod.llm import AppConfigService, OpenAILLM
 from mod.mcp import MCPClientManager, MCPTool, MCPConfig
 from mod.a2a import A2AClientManager, A2ATool, A2AConfig
 from tool.message import MessageTool  # 第 13 步写好的 MessageTool
-
+from tool.subagent import SubagentTool
 from mod.task import TaskManager
 from api.session import router as session_router, get_repo, get_task_manager
 from api.llm import router as llm_router, get_config_service
 from mod.base import ToolResult  # 用于类型提示，非必须
 
+from mod.permission import PermissionGate
+import logging
+
 logger = logging.getLogger(__name__)
 
-
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("trace.log", encoding="utf-8")  # 落盘到本地文件
+    ]
+)
 #  应用程序生命周期管理（启动/关闭）
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """一句话作用：在 FastAPI 启动时初始化所有组件，关闭时清理资源。"""
+   
     logger.info("正在启动 Agent 服务...")
 
     # 1.1 加载配置
@@ -84,6 +94,12 @@ async def lifespan(app: FastAPI):
     )
     app.state.task_manager = task_manager
 
+    subagent_tool = SubagentTool(llm=llm_client, redis_client=redis_client)
+    tools.append(subagent_tool)
+
+    permission_gate = PermissionGate()
+    app.state.permission_gate = permission_gate
+    
     # 1.9 设置依赖注入覆盖（将真实实例挂载到 API 路由中）
     def get_repo_override():
         return app.state.repo
