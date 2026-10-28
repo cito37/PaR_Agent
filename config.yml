@@ -1,7 +1,7 @@
 # 大模型配置
 llm_config:
   base_url: "https://api.deepseek.com/anthropic"
-  api_key: "sk-00236b86f5fb4ff2a2bc666d2212ea1b"
+  api_key: ""
   model_name: "deepseek-v4pro"
 
 # MCP 工具服务配置
